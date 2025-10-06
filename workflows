@@ -1,0 +1,128 @@
+name: Build WebGL and Publish to Pages
+
+on:
+  push:
+    branches:
+      - build
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      build-directory: ${{ steps.set-output.outputs.build-dir }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup cache for Library and obj
+        uses: actions/cache@v4
+        id: cache-library
+        with:
+          path: |
+            Library
+            Temp
+            obj
+          key: ${{ runner.os }}-unity-lib-${{ hashFiles('**/Packages/manifest.json') }}-${{ hashFiles('**/*.cs') }}
+          restore-keys: |
+            ${{ runner.os }}-unity-lib-
+
+      - name: Clean up memory / remove large temp files
+        run: |
+          echo "Cleaning Unity Temp and Obj"
+          rm -rf Temp || true
+          rm -rf obj || true
+
+      - name: Save build directory name
+        id: set-output
+        run: echo "::set-output name=build-dir::Build/WebGL"
+
+  unity-build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore cache (Library)
+        uses: actions/cache@v4
+        with:
+          path: |
+            Library
+            Temp
+            obj
+          key: ${{ runner.os }}-unity-lib-${{ hashFiles('**/Packages/manifest.json') }}-${{ hashFiles('**/*.cs') }}
+          restore-keys: |
+            ${{ runner.os }}-unity-lib-
+
+      - name: Install Unity (Linux) via unity-builder action
+        uses: game-ci/unity-builder@v2
+        with:
+          unityVersion: '2021.3.0f1' # <- Поменяйте на вашу версию
+          targetPlatform: WebGL
+        env:
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+
+      - name: Build WebGL (custom Unity command)
+        run: |
+          echo "Если вы не используете game-ci, можно вызвать Unity из CLI:"
+          echo "unity -quit -batchmode -projectPath . -buildTarget WebGL -executeMethod BuildScript.PerformBuild -logFile build.log"
+        # Предполагается, что в проекте есть статический скрипт BuildScript.PerformBuild
+
+      - name: Upload WebGL artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webgl-build
+          path: Build/WebGL
+
+  publish:
+    needs: unity-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: webgl-build
+          path: webgl
+
+      - name: Checkout pages repository via SSH
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.PAGES_REPO }}
+          ssh-key: ${{ secrets.DEPLOY_PRIVATE_SSH }}
+          ref: ${{ secrets.PAGES_BRANCH }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Clean pages repo (keep .git)
+        run: |
+          git rm -r --ignore-unmatch . || true
+          # preserve README or other files if нужно — адаптируйте
+          rm -rf ./* || true
+          rm -rf .[^.]* || true || true
+
+      - name: Copy WebGL build to repo root
+        run: |
+          cp -r ../webgl/Build/WebGL/* . || cp -r ../webgl/* . || true
+
+      - name: Ensure correct permissions for index.html (optional)
+        run: chmod -R a+r .
+
+      - name: Commit & push to pages repository
+        env:
+          GIT_AUTHOR_NAME: ${{ secrets.PAGES_COMMIT_NAME || 'github-actions' }}
+          GIT_AUTHOR_EMAIL: ${{ secrets.PAGES_COMMIT_EMAIL || 'actions@github.com' }}
+        run: |
+          git add -A
+          git commit -m "Update WebGL build from CI: $GITHUB_SHA" || echo "No changes to commit"
+          git push origin HEAD:${{ secrets.PAGES_BRANCH }}
