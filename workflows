@@ -77,7 +77,7 @@ jobs:
         run: |
           echo "Если вы не используете game-ci, можно вызвать Unity из CLI:"
           echo "unity -quit -batchmode -projectPath . -buildTarget WebGL -executeMethod BuildScript.PerformBuild -logFile build.log"
-        # Предполагается, что в проекте есть статический скрипт BuildScript.PerformBuild
+        BuildScript.PerformBuild
 
       - name: Upload WebGL artifact
         uses: actions/upload-artifact@v4
